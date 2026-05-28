@@ -1603,7 +1603,7 @@ function closeRecommendApi(){
 function renderRecommendApi(){
     if(!recommendApiList) return;
     recommendApiList.innerHTML = RECOMMENDED_APIS.map((api, index) => `
-        <section class="recommend-card">
+        <section class="recommend-card" style="--recommend-index:${index}">
             <div class="recommend-name">
                 <span>${escapeHtml(api.name)}</span>
                 <span class="recommend-badge">${escapeHtml(api.protocol === 'apimart' ? 'APIMart' : 'OpenAI')}</span>
@@ -1612,7 +1612,8 @@ function renderRecommendApi(){
                 ${api.tags.map(tag => `<span class="recommend-tag"><i data-lucide="${tag.toLowerCase().includes('视频') ? 'clapperboard' : tag.toLowerCase().includes('llm') || tag.toLowerCase().includes('codex') ? 'bot' : 'image'}" class="w-3 h-3"></i>${escapeHtml(tag)}</span>`).join('')}
             </div>
             <div class="recommend-actions">
-                <a class="recommend-register" href="${escapeAttr(api.register_url)}" target="_blank" rel="noopener noreferrer"><i data-lucide="external-link" class="w-3.5 h-3.5"></i><span data-i18n="api.register">注册</span></a>
+                <a class="recommend-register" href="${escapeAttr(api.register_url)}" target="_blank" rel="noopener noreferrer"><i data-lucide="key-round" class="w-3.5 h-3.5"></i><span data-i18n="api.register">获取key</span></a>
+                <div class="recommend-flow-arrow" aria-hidden="true"><span></span><i data-lucide="arrow-right" class="w-3.5 h-3.5"></i></div>
                 <button class="recommend-fill" type="button" onclick="applyRecommendedApi(${index})"><i data-lucide="wand-sparkles" class="w-3.5 h-3.5"></i><span data-i18n="api.autoFill">自动填写</span></button>
             </div>
         </section>
