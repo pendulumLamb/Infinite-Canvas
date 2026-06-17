@@ -661,7 +661,7 @@ function activeCanvasAssetCategoryInfo(){
 }
 function defaultCanvasAssetCategory(){
     const cats = canvasAssetCategories();
-    return cats.find(cat => Number(cat.count || 0) > 0)?.id || cats[0]?.id || 'smart';
+    return cats.find(cat => Number(cat.canvas_count || 0) > 0)?.id || cats[0]?.id || 'smart';
 }
 function uniqueCanvasAssets(items){
     const seen = new Set();
@@ -681,6 +681,11 @@ function canvasAssetsForCategory(categoryId=activeCanvasAssetCategory){
     let list = Array.isArray(canvasAssetsData.canvases) ? canvasAssetsData.canvases.slice() : [];
     list = list.filter(canvas => (canvas.kind || 'classic') === categoryId);
     return list.sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN', {numeric:true, sensitivity:'base'}));
+}
+function canvasAssetOpenUrl(canvas){
+    if(!canvas?.id) return '';
+    const id = encodeURIComponent(canvas.id);
+    return canvas.kind === 'smart' ? `/static/smart-canvas.html?id=${id}` : `/static/canvas.html?id=${id}`;
 }
 function activeCanvasAssetCanvas(){
     if(!activeCanvasAssetCanvasId) return null;
@@ -887,6 +892,24 @@ function managedSelectionTarget(target){
         const id = check?.dataset.localCheck || card?.dataset.localCard || '';
         if(id) return {kind:'local', id};
     }
+    if(activeTab === 'workflows' && workflowManageMode){
+        const check = target.closest?.('[data-workflow-check]');
+        const card = target.closest?.('[data-workflow-card]');
+        const id = check?.dataset.workflowCheck || card?.dataset.workflowCard || '';
+        if(id) return {kind:'workflow', id};
+    }
+    if(activeTab === 'prompts' && promptManageMode){
+        const check = target.closest?.('[data-prompt-check]');
+        const row = target.closest?.('[data-prompt-row]');
+        const id = check?.dataset.promptCheck || row?.dataset.promptRow || '';
+        if(id) return {kind:'prompt', id};
+    }
+    if(activeTab === 'canvas-assets' && canvasAssetManageMode){
+        const check = target.closest?.('[data-canvas-asset-check]');
+        const card = target.closest?.('[data-canvas-asset-card]');
+        const id = check?.dataset.canvasAssetCheck || card?.dataset.canvasAssetCard || '';
+        if(id) return {kind:'canvasAsset', id};
+    }
     return null;
 }
 function applyManagedSelection(kind, id){
@@ -899,6 +922,17 @@ function applyManagedSelection(kind, id){
     } else if(kind === 'local'){
         const selected = toggleSelectionSet(selectedLocalIds, id);
         selectedLocalId = selected ? id : (selectedLocalId === id ? '' : selectedLocalId);
+    } else if(kind === 'workflow'){
+        const selected = toggleSelectionSet(selectedWorkflowIds, id);
+        selectedWorkflowId = selected ? id : (selectedWorkflowId === id ? '' : selectedWorkflowId);
+    } else if(kind === 'prompt'){
+        const selected = toggleSelectionSet(selectedPromptIds, id);
+        selectedPromptId = selected ? id : (selectedPromptId === id ? '' : selectedPromptId);
+        promptEditMode = false;
+        promptCreateMode = false;
+    } else if(kind === 'canvasAsset'){
+        const selected = toggleSelectionSet(selectedCanvasAssetIds, id);
+        selectedCanvasAssetId = selected ? id : (selectedCanvasAssetId === id ? '' : selectedCanvasAssetId);
     }
     pendingBatchDelete = '';
 }
@@ -964,6 +998,22 @@ function normalizeCanvasAssetState(){
     if(selectedCanvasAssetId && !items.some(item => item.id === selectedCanvasAssetId)) selectedCanvasAssetId = '';
     if(!selectedCanvasAssetId && items.length) selectedCanvasAssetId = items[0].id;
     selectedCanvasAssetIds = new Set([...selectedCanvasAssetIds].filter(id => findCanvasAssetItem(id)));
+}
+async function refreshCanvasAssets(){
+    try {
+        setStatus('正在刷新画布资产...');
+        const data = await apiJson('/api/canvas-assets');
+        canvasAssetsData = {
+            categories:Array.isArray(data.categories) ? data.categories : [],
+            canvases:Array.isArray(data.canvases) ? data.canvases : [],
+            items:Array.isArray(data.items) ? data.items : []
+        };
+        normalizeCanvasAssetState();
+        render();
+        setStatus('画布资产已刷新');
+    } catch(err) {
+        setStatus(err.message || '刷新画布资产失败');
+    }
 }
 async function loadAll(){
     setStatus('加载中...');
@@ -1051,7 +1101,7 @@ function renderCanvasAssetsManager(){
     normalizeCanvasAssetState();
     const items = currentCanvasAssetItems();
     const groups = groupCanvasAssetItems(items);
-    const total = (canvasAssetsData.items || []).length;
+    const total = uniqueCanvasAssets(canvasAssetsData.items || []).length;
     const detail = selectedCanvasAsset();
     root.innerHTML = `
         <aside class="asset-panel asset-nav">
@@ -1070,6 +1120,7 @@ function renderCanvasAssetsManager(){
                     <span>${canvasAssetViewSubtitle(items)}</span>
                 </div>
                 <div class="asset-tools">
+                    <button class="asset-btn" type="button" data-canvas-asset-refresh title="重新读取画布中的图片、视频、音频资源"><i data-lucide="refresh-cw"></i><span>刷新资源</span></button>
                     <label class="asset-search-wrap"><i data-lucide="search"></i><input id="canvasAssetSearch" class="asset-search" type="search" value="${escapeAttr(canvasAssetQuery)}" placeholder="搜索画布资产"></label>
                     <select id="canvasAssetSort" class="manage-select canvas-sort-select" title="排序方法">
                         <option value="canvas_asc" ${canvasAssetSort === 'canvas_asc' ? 'selected' : ''}>画布名称</option>
@@ -1092,7 +1143,7 @@ function renderCanvasAssetsManager(){
             <div class="content-scroll">
                 <div class="asset-grid">
                     ${groups.map(group => renderCanvasAssetGroup(group)).join('')}
-                    ${items.length ? '' : '<div class="empty-state">当前分类没有可下载的画布资产。可以切换分类，或在画布中生成/导入图片、视频、音频后再查看。</div>'}
+                    ${items.length ? '' : '<div class="empty-state">当前分类没有可下载的画布资产。可以点击“刷新资源”，或在画布中生成/导入图片、视频、音频后再查看。</div>'}
                 </div>
             </div>
         </section>
@@ -1143,8 +1194,8 @@ function renderCanvasAssetGroup(group){
 function renderCanvasAssetCard(item){
     return `<article class="asset-card canvas-asset-card ${item.id === selectedCanvasAssetId ? 'active' : ''}" data-canvas-asset-card="${escapeAttr(item.id)}">
         <input class="asset-card-check" type="checkbox" data-canvas-asset-check="${escapeAttr(item.id)}" ${selectedCanvasAssetIds.has(item.id) ? 'checked' : ''}>
-        <div class="asset-thumb canvas-asset-thumb">${assetThumb(item)}${renderCanvasAssetKindBadge(item)}</div>
-        <div class="asset-card-body">
+        <div class="asset-thumb canvas-asset-thumb" data-canvas-asset-check="${escapeAttr(item.id)}">${assetThumb(item)}${renderCanvasAssetKindBadge(item)}</div>
+        <div class="asset-card-body" data-canvas-asset-check="${escapeAttr(item.id)}">
             <div class="asset-card-name" title="${escapeAttr(item.name || '')}">${escapeHtml(item.name || 'canvas asset')}</div>
             <div class="asset-card-meta">${escapeHtml(canvasAssetKindLabel(item))} · ${escapeHtml(item.canvas_title || '未命名画布')}</div>
         </div>
@@ -1703,8 +1754,8 @@ function renderWorkflowTreeInlineEdit(){
 function renderWorkflowCard(item){
     return `<article class="asset-card workflow-card ${item.id === selectedWorkflowId ? 'active' : ''}" data-workflow-card="${escapeAttr(item.id)}">
         <input class="asset-card-check" type="checkbox" data-workflow-check="${escapeAttr(item.id)}" ${selectedWorkflowIds.has(item.id) ? 'checked' : ''}>
-        <div class="asset-thumb">${workflowThumb(item)}</div>
-        <div class="asset-card-body">
+        <div class="asset-thumb" data-workflow-check="${escapeAttr(item.id)}">${workflowThumb(item)}</div>
+        <div class="asset-card-body" data-workflow-check="${escapeAttr(item.id)}">
             <div class="asset-card-name" title="${escapeAttr(item.name || '')}">${escapeHtml(item.name || 'workflow')}</div>
             <div class="asset-card-meta">${escapeHtml(workflowKindLabel(item))} · ${escapeHtml(formatDate(item.created_at))}</div>
         </div>
@@ -2090,7 +2141,7 @@ function renderPromptTreeInlineEdit(kind){
 function renderPromptRow(item, readonly){
     return `<article class="prompt-row ${item.id === selectedPromptId ? 'active' : ''}" data-prompt-row="${escapeAttr(item.id)}">
         <input class="prompt-row-check" type="checkbox" data-prompt-check="${escapeAttr(item.id)}" ${selectedPromptIds.has(item.id) ? 'checked' : ''} ${readonly ? 'disabled' : ''}>
-        <div class="prompt-row-main">
+        <div class="prompt-row-main" data-prompt-check="${escapeAttr(item.id)}">
             <div class="prompt-row-title"><strong>${escapeHtml(item.name || '提示词')}</strong><span class="prompt-tag">${escapeHtml(promptCategoryLabel(item.category || 'custom'))}</span></div>
             <div class="prompt-row-scene">${escapeHtml(item.scene || '未填写用途说明')}</div>
             <div class="prompt-row-text">${escapeHtml(item.positive || '')}</div>
@@ -2153,11 +2204,11 @@ function renderPromptDetail(item, readonly){
             </div>
             <section class="prompt-block">
                 <div class="prompt-block-head"><span>正向提示词</span><span>${String(item.positive || '').length} 字符</span></div>
-                <div class="prompt-block-body">${escapeHtml(item.positive || '未填写')}</div>
+                <textarea class="prompt-block-body" readonly spellcheck="false">${escapeHtml(item.positive || '未填写')}</textarea>
             </section>
             <section class="prompt-block">
                 <div class="prompt-block-head"><span>负向提示词</span><span>${String(item.negative || '').length} 字符</span></div>
-                <div class="prompt-block-body negative">${escapeHtml(item.negative || '未填写')}</div>
+                <textarea class="prompt-block-body negative" readonly spellcheck="false">${escapeHtml(item.negative || '未填写')}</textarea>
             </section>
             ${params.length ? `<div class="params-list">${params.map(([key, value]) => `<div class="param-row"><strong>${escapeHtml(key)}</strong><span>${escapeHtml(value)}</span></div>`).join('')}</div>` : ''}
         </div>
@@ -2828,6 +2879,49 @@ async function handleClick(event){
             return;
         }
     }
+    if(activeTab === 'workflows' && workflowManageMode){
+        const workflowCheck = target.closest?.('[data-workflow-check]');
+        const workflowCard = target.closest?.('[data-workflow-card]');
+        if(workflowCheck || workflowCard){
+            event.preventDefault();
+            event.stopPropagation();
+            const id = workflowCheck?.dataset.workflowCheck || workflowCard?.dataset.workflowCard || '';
+            const selected = toggleSelectionSet(selectedWorkflowIds, id);
+            selectedWorkflowId = selected ? id : (selectedWorkflowId === id ? '' : selectedWorkflowId);
+            pendingBatchDelete = '';
+            render();
+            return;
+        }
+    }
+    if(activeTab === 'prompts' && promptManageMode){
+        const promptCheck = target.closest?.('[data-prompt-check]');
+        const promptRow = target.closest?.('[data-prompt-row]');
+        if(promptCheck || promptRow){
+            event.preventDefault();
+            event.stopPropagation();
+            const id = promptCheck?.dataset.promptCheck || promptRow?.dataset.promptRow || '';
+            const selected = toggleSelectionSet(selectedPromptIds, id);
+            selectedPromptId = selected ? id : (selectedPromptId === id ? '' : selectedPromptId);
+            promptEditMode = false;
+            promptCreateMode = false;
+            pendingBatchDelete = '';
+            render();
+            return;
+        }
+    }
+    if(activeTab === 'canvas-assets' && canvasAssetManageMode){
+        const canvasCheck = target.closest?.('[data-canvas-asset-check]');
+        const canvasCard = target.closest?.('[data-canvas-asset-card]');
+        if(canvasCheck || canvasCard){
+            event.preventDefault();
+            event.stopPropagation();
+            const id = canvasCheck?.dataset.canvasAssetCheck || canvasCard?.dataset.canvasAssetCard || '';
+            const selected = toggleSelectionSet(selectedCanvasAssetIds, id);
+            selectedCanvasAssetId = selected ? id : (selectedCanvasAssetId === id ? '' : selectedCanvasAssetId);
+            refreshCanvasAssetSelectionOnly();
+            return;
+        }
+    }
     const tabBtn = target.closest?.('[data-tab]');
     if(tabBtn){ activeTab = tabBtn.dataset.tab || 'assets'; selectedAssetIds.clear(); selectedWorkflowIds.clear(); selectedPromptIds.clear(); selectedLocalIds.clear(); selectedLocalUploadIds.clear(); selectedCanvasAssetIds.clear(); render(); return; }
     if(target.closest?.('#refreshBtn')){ await loadAll(); return; }
@@ -2949,6 +3043,7 @@ async function handleClick(event){
         render();
         return;
     }
+    if(target.closest?.('[data-canvas-asset-refresh]')){ await refreshCanvasAssets(); return; }
     if(target.closest?.('[data-canvas-asset-manage]')){
         canvasAssetManageMode = !canvasAssetManageMode;
         if(!canvasAssetManageMode) selectedCanvasAssetIds.clear();
@@ -2964,13 +3059,26 @@ async function handleClick(event){
     if(canvasAssetOpen){ const it = findCanvasAssetItem(canvasAssetOpen.dataset.canvasAssetOpen || ''); if(it?.url) window.open(it.url, '_blank', 'noopener'); return; }
     const canvasAssetCopy = target.closest?.('[data-canvas-asset-copy]');
     if(canvasAssetCopy){ const it = findCanvasAssetItem(canvasAssetCopy.dataset.canvasAssetCopy || ''); const ok = await copyTextToClipboard(it?.url || ''); setStatus(ok ? '已复制画布资产链接' : '复制失败'); return; }
-    if(target.closest?.('[data-canvas-asset-check]')) return;
+    const canvasAssetCheck = target.closest?.('[data-canvas-asset-check]');
+    if(canvasAssetCheck){
+        event.preventDefault();
+        event.stopPropagation();
+        if(canvasAssetManageMode){
+            const id = canvasAssetCheck.dataset.canvasAssetCheck || '';
+            const selected = toggleSelectionSet(selectedCanvasAssetIds, id);
+            selectedCanvasAssetId = selected ? id : (selectedCanvasAssetId === id ? '' : selectedCanvasAssetId);
+            refreshCanvasAssetSelectionOnly();
+        }
+        return;
+    }
     const canvasAssetCard = target.closest?.('[data-canvas-asset-card]');
     if(canvasAssetCard){
         const id = canvasAssetCard.dataset.canvasAssetCard || '';
-        selectedCanvasAssetId = id;
         if(canvasAssetManageMode){
-            if(selectedCanvasAssetIds.has(id)) selectedCanvasAssetIds.delete(id); else selectedCanvasAssetIds.add(id);
+            const selected = toggleSelectionSet(selectedCanvasAssetIds, id);
+            selectedCanvasAssetId = selected ? id : (selectedCanvasAssetId === id ? '' : selectedCanvasAssetId);
+        } else {
+            selectedCanvasAssetId = id;
         }
         refreshCanvasAssetSelectionOnly();
         return;
@@ -3290,7 +3398,21 @@ async function handleClick(event){
     const promptCat = target.closest?.('[data-prompt-cat]');
     if(promptCat){ activePromptLibraryId = promptCat.dataset.promptCatLib || activePromptLibraryId; activePromptCategory = promptCat.dataset.promptCat || 'all'; promptTreeFocus = 'category'; selectedPromptId = ''; promptCreateMode = false; promptEditMode = false; selectedPromptIds.clear(); render(); return; }
     const promptRow = target.closest?.('[data-prompt-row]');
-    if(promptRow){ selectedPromptId = promptRow.dataset.promptRow || ''; promptEditMode = false; promptCreateMode = false; pendingDeletePromptId = ''; render(); return; }
+    if(promptRow){
+        const id = promptRow.dataset.promptRow || '';
+        if(promptManageMode){
+            const selected = toggleSelectionSet(selectedPromptIds, id);
+            selectedPromptId = selected ? id : (selectedPromptId === id ? '' : selectedPromptId);
+        } else {
+            selectedPromptId = id;
+        }
+        promptEditMode = false;
+        promptCreateMode = false;
+        pendingDeletePromptId = '';
+        pendingBatchDelete = '';
+        render();
+        return;
+    }
 }
 function openAssetItem(id){
     const item = findAssetItem(id);
@@ -4183,24 +4305,6 @@ root.addEventListener('change', event => {
         }).catch(err => setStatus(err.message || '保存失败'));
         return;
     }
-    const workflowCheck = event.target.closest?.('[data-workflow-check]');
-    if(workflowCheck){
-        if(!workflowManageMode) return;
-        if(workflowCheck.checked) {
-            selectedWorkflowIds.add(workflowCheck.dataset.workflowCheck);
-            selectedWorkflowId = workflowCheck.dataset.workflowCheck;
-        } else selectedWorkflowIds.delete(workflowCheck.dataset.workflowCheck);
-        render();
-    }
-    const promptCheck = event.target.closest?.('[data-prompt-check]');
-    if(promptCheck){
-        if(!promptManageMode) return;
-        if(promptCheck.checked) {
-            selectedPromptIds.add(promptCheck.dataset.promptCheck);
-            selectedPromptId = promptCheck.dataset.promptCheck;
-        } else selectedPromptIds.delete(promptCheck.dataset.promptCheck);
-        render();
-    }
     const localCheck = event.target.closest?.('[data-local-check]');
     if(localCheck){
         if(!localManageMode) return;
@@ -4209,15 +4313,6 @@ root.addEventListener('change', event => {
             selectedLocalId = localCheck.dataset.localCheck;
         } else selectedLocalIds.delete(localCheck.dataset.localCheck);
         render();
-    }
-    const canvasAssetCheck = event.target.closest?.('[data-canvas-asset-check]');
-    if(canvasAssetCheck){
-        if(!canvasAssetManageMode) return;
-        if(canvasAssetCheck.checked) {
-            selectedCanvasAssetIds.add(canvasAssetCheck.dataset.canvasAssetCheck);
-            selectedCanvasAssetId = canvasAssetCheck.dataset.canvasAssetCheck;
-        } else selectedCanvasAssetIds.delete(canvasAssetCheck.dataset.canvasAssetCheck);
-        refreshCanvasAssetSelectionOnly();
     }
     if(event.target?.id === 'canvasAssetSort'){
         canvasAssetSort = event.target.value || 'canvas_asc';
