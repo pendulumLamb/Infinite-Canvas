@@ -1,10 +1,10 @@
 {
-  "version": "2026.06.23",
-  "updated_at": "2026-06-23T11:06:00+08:00",
+  "version": "2026.06.24",
+  "updated_at": "2026-06-24T14:52:00+08:00",
   "items": [
     {
       "type": "improve",
-      "text": "修复循环节点bug，新增API支持"
+      "text": "修复提示词分组不能编辑bug，增加RunningHub的API调用"
     }
   ]
 }

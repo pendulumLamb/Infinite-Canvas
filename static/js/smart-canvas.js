@@ -360,17 +360,17 @@ const MS_GEN_MODELS = {
 };
 const SIZE_MAP = {
     square: {'1k':'1024x1024','2k':'2048x2048','4k':'4096x4096'},
-    landscape: {'1k':'1536x1024','2k':'2048x1360','4k':'3520x2336'},
-    portrait: {'1k':'1024x1536','2k':'1360x2048','4k':'2336x3520'},
-    landscape43: {'1k':'1024x768','2k':'2048x1536','4k':'3312x2480'},
-    portrait43: {'1k':'768x1024','2k':'1536x2048','4k':'2480x3312'},
-    wide: {'1k':'1536x864','2k':'2048x1152','4k':'3840x2160'},
-    story: {'1k':'864x1536','2k':'1152x2048','4k':'2160x3840'},
-    ultrawide: {'1k':'1536x656','2k':'2048x880','4k':'3840x1648'},
-    ultratall: {'1k':'656x1536','2k':'880x2048','4k':'1648x3840'}
+    portrait: {'1k':'1024x1536','2k':'1360x2048','4k':'2352x3520'},
+    portrait43: {'1k':'1008x1344','2k':'1536x2048','4k':'2448x3264'},
+    landscape43: {'1k':'1344x1008','2k':'2048x1536','4k':'3264x2448'},
+    landscape: {'1k':'1536x1024','2k':'2048x1360','4k':'3520x2352'},
+    story: {'1k':'720x1280','2k':'1152x2048','4k':'2160x3840'},
+    wide: {'1k':'1280x720','2k':'2048x1152','4k':'3840x2160'},
+    ultrawide: {'1k':'1280x544','2k':'2048x880','4k':'3840x1648'},
+    ultratall: {'1k':'544x1280','2k':'880x2048','4k':'1648x3840'}
 };
-const RES_LONG_SIDE = { '1k':1024, '2k':2048, '4k':3840 };
-const RES_PIXEL_LIMIT = { '1k':2359296, '2k':4194304, '4k':8294400 };
+const RES_LONG_SIDE = { '1k':1536, '2k':2048, '4k':3840 };
+const RES_PIXEL_LIMIT = { '1k':1572864, '2k':4194304, '4k':8294400 };
 function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
 function trf(key, values={}){
     return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
@@ -510,6 +510,16 @@ function normalizeSmartVideoModeSettings(target, preferMultimodal=false){
 }
 function isApiLikeEngine(engine){
     return ['api', 'volcengine'].includes(String(engine || '').toLowerCase());
+}
+function smartLoopRoundSettings(runSettings, ctx=smartLoopContext){
+    const next = {...(runSettings || {})};
+    const imageCountEngine = isApiLikeEngine(next.engine)
+        ? next.apiKind !== 'video'
+        : next.engine === 'modelscope';
+    if(ctx?.nodeId && imageCountEngine){
+        next.count = 1;
+    }
+    return next;
 }
 function isGptImageAutoSizeModel(model){
     const raw = String(model || '').trim().toLowerCase();
@@ -5949,12 +5959,12 @@ function resultMediaUrls(result){
                     urls.push(item);
                 }
             }
-            ['outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
+            ['image_items','media_items','items','outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
             ['url','path','src','uri','output','output_url','outputUrl','video','video_url','videoUrl','mp4_url','mp4Url','download_url','downloadUrl','preview_url','previewUrl'].forEach(key => add(value[key]));
         }
     };
     add(result);
-    ['items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
+    ['image_items','media_items','items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
     const seen = new Set();
     return urls.map(item => {
         const url = typeof item === 'string' ? item : item?.url || item?.path || '';
@@ -6328,7 +6338,17 @@ function smartRunSnapshot(node, prompt, refs=[], kind='image'){
 function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
     if(!canvas) return;
     canvas.logs = canvas.logs || [];
-    const outputUrls = resultMediaUrls(outputs).map(item => typeof item === 'string' ? item : item?.url || '').filter(Boolean);
+    const outputItems = resultMediaUrls(outputs).map(item => {
+        if(typeof item === 'string') return {url:item};
+        if(!item || typeof item !== 'object') return null;
+        const url = item.url || item.path || item.src || item.uri || '';
+        if(!url) return null;
+        return copyMediaSizeFields(item, {
+            url,
+            kind:item.kind || item.type || item.mediaKind || '',
+            name:item.name || item.filename || ''
+        });
+    }).filter(item => item?.url);
     const entry = {
         id:uid('log'),
         createdAt:Date.now(),
@@ -6339,7 +6359,7 @@ function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
         model:smartRunTaskLabel(run),
         request:smartRunRequestMeta(run),
         prompt:run?.prompt || '',
-        outputs:outputUrls,
+        outputs:outputItems,
         refs:run?.refs || [],
         runMs:Number(runMs || 0),
         error:error ? String(error) : ''
@@ -6350,6 +6370,36 @@ function addSmartGenerationLog({run, outputs=[], runMs=0, error=''}) {
 }
 const SMART_LOG_PREVIEW_NODE_ID = '__smart_log_preview__';
 let smartLogPreviewRestore = null;
+function smartLogOutputItem(output){
+    if(typeof output === 'string') return {url:output};
+    if(!output || typeof output !== 'object') return null;
+    const url = output.url || output.path || output.src || output.uri || '';
+    if(!url) return null;
+    return copyMediaSizeFields(output, {
+        url,
+        kind:output.kind || output.type || output.mediaKind || '',
+        name:output.name || output.filename || ''
+    });
+}
+function normalizedSizeLabel(value){
+    const parsed = parseSizeValue(value);
+    const w = Number(parsed?.width || 0);
+    const h = Number(parsed?.height || 0);
+    return w > 0 && h > 0 ? `${Math.round(w)} x ${Math.round(h)}` : '';
+}
+function smartLogSizeSummary(log, outputs=[]){
+    const req = log?.request || {};
+    const requestLabel = normalizedSizeLabel(req.size || req.resolution || '');
+    const actualLabels = [...new Set(outputs.map(imageResolutionLabel).filter(Boolean))];
+    if(!actualLabels.length) return '';
+    const actualText = actualLabels.slice(0, 3).join(', ');
+    const more = actualLabels.length > 3 ? ` +${actualLabels.length - 3}` : '';
+    const actualLabel = `${actualText}${more}`;
+    if(requestLabel && actualLabels.some(label => label !== requestLabel)){
+        return `请求 ${requestLabel} / 实际 ${actualLabel}`;
+    }
+    return `实际 ${actualLabel}`;
+}
 // 移除临时预览节点并还原选中态。供 closeImageEditor 调用。
 function cleanupSmartLogPreviewNode(){
     if(nodes.some(n => n.id === SMART_LOG_PREVIEW_NODE_ID)) nodes = nodes.filter(n => n.id !== SMART_LOG_PREVIEW_NODE_ID);
@@ -6400,18 +6450,23 @@ function smartLogPreviewNode(url, kind='image'){
 function renderSmartCanvasLog(){
     const logs = canvas?.logs || [];
     smartLogList.innerHTML = logs.length ? logs.map(log => {
-        const thumbs = (log.outputs || []).slice(0, 8).map(url => {
-            const safe = escapeAttr(url);
-            const kind = outputUrlLooksVideo(url) ? 'video' : 'image';
-            return kind === 'video' ? smartVideoPreviewHtml(url, 256, `data-url="${safe}" data-kind="video" alt="output"`) : smartPreviewImgHtml(url, 256, `data-url="${safe}" data-kind="image" alt="output"`);
+        const outputs = (log.outputs || []).map(smartLogOutputItem).filter(item => item?.url);
+        const thumbs = outputs.slice(0, 8).map(item => {
+            const safe = escapeAttr(item.url);
+            const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
+            const label = imageResolutionLabel(item);
+            const attrs = `data-url="${safe}" data-kind="${escapeAttr(kind)}" title="${escapeAttr(label || 'output')}" alt="output"`;
+            return kind === 'video' ? smartVideoPreviewHtml(item, 256, attrs) : smartPreviewImgHtml(item, 256, attrs);
         }).join('');
         const date = new Date(log.createdAt || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
         const req = log.request || {};
         const taskId = req.task_id || req.taskId || req.prompt_id || req.promptId || '';
         const backend = req.workflow_json || req.workflow || req.provider_id || req.providerId || req.backend || '';
+        const sizeSummary = smartLogSizeSummary(log, outputs);
         const subParts = [
             date,
-            `${window.StudioI18n?.lang() === 'en' ? 'outputs' : '输出'} ${(log.outputs || []).length}`,
+            `${window.StudioI18n?.lang() === 'en' ? 'outputs' : '输出'} ${outputs.length}`,
+            sizeSummary,
             taskId ? `ID ${taskId}` : '',
             backend
         ].filter(Boolean);
@@ -6608,7 +6663,7 @@ function smartLoopBodyHtml(node){
         ? trf('smart.loopPromptHintFound', {n:promptItems.length})
         : tr('smart.loopPromptHintVariable');
     const currentUpstreamPrompt = smartLoopSelectedInputPrompt(node, {index:node.loopStart});
-    const defaultPrompt = tr('smart.loopDefaultPrompt') || '现在生成第《计数》张卖点图片';
+    const defaultPrompt = smartLoopDefaultPromptText();
     const loopRunState = smartCascadeRunForLoop(node.id);
     const loopRunning = Boolean(loopRunState);
     const loopStopping = Boolean(loopRunState?.stopRequested);
@@ -6636,11 +6691,14 @@ function smartLoopBodyHtml(node){
                 <div class="loop-smart-upstream-text">${escapeHtml(currentUpstreamPrompt)}</div>
             </div>` : ''}
             <div class="loop-smart-prompt-list">
-                ${visiblePromptFields.map((value, index) => `<div class="loop-smart-prompt-item">
+                ${visiblePromptFields.map((value, index) => {
+                    const displayValue = promptItems.length && isSmartLoopDefaultPrompt(value) ? '' : value;
+                    return `<div class="loop-smart-prompt-item">
                     <div class="loop-smart-prompt-index">${index + 1}</div>
-                    <div class="loop-smart-control loop-smart-text" contenteditable="true" data-loop-prompt-index="${index}" data-placeholder="${escapeHtml(tr('canvas.loopVariablePlaceholder'))}">${smartLoopVariableHtml(value || (index === 0 && !promptFields.length ? defaultPrompt : ''))}</div>
+                    <div class="loop-smart-control loop-smart-text" contenteditable="true" data-loop-prompt-index="${index}" data-placeholder="${escapeHtml(tr('canvas.loopVariablePlaceholder'))}">${smartLoopVariableHtml(displayValue || (index === 0 && !promptFields.length && !promptItems.length ? defaultPrompt : ''))}</div>
                     <button class="loop-smart-control loop-smart-icon-btn" type="button" data-loop-prompt-delete="${index}" ${visiblePromptFields.length <= 1 ? 'disabled' : ''} title="${escapeHtml(tr('common.delete'))}" aria-label="${escapeHtml(tr('common.delete'))}">×</button>
-                </div>`).join('')}
+                </div>`;
+                }).join('')}
             </div>
             <div class="loop-smart-row loop-smart-prompt-actions">
                 <button class="loop-smart-control loop-smart-token loop-smart-counter-token" type="button" data-loop-token="《计数》">${escapeHtml(tr('canvas.counterToken'))}</button>
@@ -6983,6 +7041,7 @@ function render(){
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}
             <div class="node-body">${body}</div>
+            ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="拖动移出分组"></div>' : ''}
             <div class="node-hint">${hint}</div>
             ${imgs.length || node.pending || isQueued || isJimengPending || isPrompt || isLoop || isSmartGroup ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
             <div class="node-port port-in" data-port="in" title="input"></div>
@@ -7346,7 +7405,7 @@ function bindLoopNodeControls(el, node){
             if(btn.dataset.loopToggle === 'image') node.imageInput = !node.imageInput;
             if(btn.dataset.loopToggle === 'prompt') {
                 node.showPrompt = !node.showPrompt;
-                if(node.showPrompt && !smartLoopActivePromptFieldValues(node).length) setSmartLoopPromptFieldValues(node, [tr('smart.loopDefaultPrompt') || '现在生成第《计数》张卖点图片']);
+                if(node.showPrompt && !smartLoopInputPromptItems(node).length && !smartLoopActivePromptFieldValues(node).length) setSmartLoopPromptFieldValues(node, [smartLoopDefaultPromptText()]);
             }
             fitSmartLoopNode(node);
             render();
@@ -7835,7 +7894,7 @@ function bindNodeEvents(){
             capturePendingUndo();
         });
         const beginNodeDrag = e => {
-            if(e.button !== 0 || e.target.closest('.mini-x, .smart-node-floating-menu, .node-resize-handle, .thumb-item, .node-port, select, input, button')) return;
+            if(e.button !== 0 || e.target.closest('.mini-x, .smart-node-floating-menu, .node-resize-handle, .thumb-item, .node-port, .prompt-node-control, select, input, textarea, button')) return;
             if(e.target.closest('.prompt-node-pill, textarea:not(.prompt-node-text)')) return;
             e.preventDefault(); e.stopPropagation();
             window.getSelection?.()?.removeAllRanges?.();
@@ -11373,8 +11432,10 @@ function connectInputNode(fromId, toId){
     const to = nodes.find(n => n.id === toId);
     if(!from || !to || from.id === to.id) return false;
     if(to.type === 'smart-loop'){
-        const looksImage = isSmartImageNode(from) || isSmartGroupNode(from) || (from.type === 'smart-loop' && from.imageInput);
-        const looksPrompt = from.type === 'smart-prompt' || isSmartGroupNode(from) || (from.type === 'smart-loop' && from.showPrompt);
+        const groupImages = isSmartGroupNode(from) ? imagesForNode(from).filter(img => img?.url) : [];
+        const groupPrompts = isSmartGroupNode(from) ? promptTextItemsForNode(from).filter(Boolean) : [];
+        const looksImage = isSmartImageNode(from) || groupImages.length > 0 || (from.type === 'smart-loop' && from.imageInput);
+        const looksPrompt = from.type === 'smart-prompt' || groupPrompts.length > 0 || (from.type === 'smart-loop' && from.showPrompt);
         if(looksImage && !to.imageInput) to.imageInput = true;
         if(looksPrompt && !to.showPrompt) to.showPrompt = true;
         if(looksImage || looksPrompt) fitSmartLoopNode(to);
@@ -11475,6 +11536,16 @@ function smartLoopPromptFieldValues(node){
 function smartLoopActivePromptFieldValues(node){
     return smartLoopPromptFieldValues(node).filter(Boolean);
 }
+function smartLoopDefaultPromptText(){
+    return tr('smart.loopDefaultPrompt') || '现在生成第《计数》张卖点图片';
+}
+function isSmartLoopDefaultPrompt(text){
+    const value = String(text || '').trim();
+    if(!value) return false;
+    return value === smartLoopDefaultPromptText()
+        || value === '现在生成第《计数》张卖点图片'
+        || value === 'Generate selling-point image 《计数》';
+}
 function setSmartLoopPromptFieldValues(node, values){
     if(!node || node.type !== 'smart-loop') return;
     const fields = (values || []).map(text => String(text || '').trim());
@@ -11500,14 +11571,10 @@ function smartLoopInputPromptItems(node){
     if(!node?.showPrompt || smartLoopPromptVisiting.has(node.id)) return [];
     smartLoopPromptVisiting.add(node.id);
     try {
-        return inputNodesFor(node).flatMap(input => {
-            if(input.type === 'smart-prompt') return promptNodePromptItems(input);
-            if(input.type === 'smart-loop') {
-                const text = smartLoopPrompt(input);
-                return text ? [text] : [];
-            }
-            return [];
-        }).filter(Boolean);
+        return inputNodesFor(node)
+            .flatMap(input => promptTextItemsForNode(input))
+            .map(text => String(text || '').trim())
+            .filter(Boolean);
     } finally {
         smartLoopPromptVisiting.delete(node.id);
     }
@@ -11527,7 +11594,8 @@ function smartLoopPrompt(node, ctx=smartLoopContext){
     const total = Math.max(1, Number(ctx?.total || count) || count);
     const selected = smartLoopSelectedInputPrompt(node, ctx);
     const localPrompt = smartLoopSelectedLocalPrompt(node, ctx);
-    const combined = [selected, localPrompt].map(text => String(text || '').trim()).filter(Boolean).join('\n\n');
+    const effectiveLocalPrompt = selected && isSmartLoopDefaultPrompt(localPrompt) ? '' : localPrompt;
+    const combined = [selected, effectiveLocalPrompt].map(text => String(text || '').trim()).filter(Boolean).join('\n\n');
     return String(combined || '')
         .replaceAll('《计数》', String(index))
         .replaceAll('[计数]', String(index))
@@ -12381,11 +12449,11 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     if(!pendingNode) return;
     pendingNode = liveSmartNode(pendingNode);
     const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
-    const imgs = urls.map((item, i) => {
+    const imgs = cleanHistoryImages(urls.map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
         return copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true});
-    }).filter(img => img.url);
+    }).filter(img => img.url));
     pendingNode.images = imgs;
     markSmartNodeComplete(pendingNode, meta);
     pendingNode.outputKind = kind;
@@ -12862,8 +12930,15 @@ function appendOutputsToNode(node, additions, kind='image', options={}){
     if(!node || !additions?.length) return [];
     node = liveSmartNode(node);
     const beforeRight = (Number(node.x) || 0) + nodeRect(node).width;
-    const existing = nonPreviewOutputImages(node.images).map(img => stripImageGenerationMeta({...img}));
-    const next = additions.map(img => stripImageGenerationMeta({...img}));
+    const existing = cleanHistoryImages(node.images || []);
+    const seen = new Set(existing.map(img => `${img.kind || ''}|${img.url || ''}`));
+    const next = cleanHistoryImages(additions).filter(img => {
+        const key = `${img.kind || ''}|${img.url || ''}`;
+        if(seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    if(!next.length) return [];
     node.images = [...existing, ...next];
     markSmartNodeComplete(node);
     node.outputKind = kind;
@@ -12988,7 +13063,7 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
         const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
         if(taskIds.length){
             const settled = await Promise.all(taskIds.map(taskId => pollSmartCanvasTask(taskId)));
-            const urls = settled.flatMap(result => resultMediaUrls(result?.images || result)).filter(Boolean);
+            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
             return {urls, kind:mediaKindForUrls(urls, 'image')};
         }
         const urls = resultMediaUrls(taskResult);
@@ -13061,7 +13136,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
     if(!sourceNode || !targetNode || !outputNode) return [];
     const requestNode = sourceNode?.type === 'smart-loop' ? targetNode : sourceNode;
     const previousSettings = cloneSmartSettings(settings);
-    const runSettings = {...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(requestNode) || {})};
+    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(requestNode) || {})}, ctx);
     settings = runSettings;
     const outpaintSize = validOutpaintSize(requestNode);
     const selfRefs = sourceNode?.type === 'smart-loop' ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
@@ -13154,7 +13229,7 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=sma
             return [];
         }
         outputNode.running = false;
-        addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
+        if(!e?.smartGenerationLogged) addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         render();
         throw e;
     }
@@ -13164,7 +13239,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
     outputSlot = liveSmartNode(outputSlot);
     const previousSettings = cloneSmartSettings(settings);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
-    const runSettings = {...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(rootNode) || {})};
+    const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(smartSettingsForNode(rootNode) || {})}, ctx);
     settings = runSettings;
     try {
         const refsForRequest = outputImagesForNode(loopNode, true, ctx).filter(img => img?.url);
@@ -13223,7 +13298,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             render();
             scheduleSave();
             await saveCanvas();
-            await resumeSmartPendingNode(outputSlot);
+            await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
             if(outputSlot.jimengPending || smartRecoverableImageTask(outputSlot)){
                 outputSlot.queued = false;
                 return [];
@@ -13643,7 +13718,7 @@ async function runGeneration(){
         if(settings.engine === 'comfy'){
             await runComfyGeneration(pendingNode, prompt, refs, pendingNode, pendingMeta);
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            addSmartGenerationLog({run:runLog, outputs:(pendingNode.images || []).map(img => img.url).filter(Boolean), runMs:nowMs() - runLogStart});
+            addSmartGenerationLog({run:runLog, outputs:pendingNode.images || [], runMs:nowMs() - runLogStart});
             settings = previousSettings;
             return;
         }
@@ -13674,7 +13749,7 @@ async function runGeneration(){
             render();
             scheduleSave();
             await saveCanvas();
-            await resumeSmartPendingNode(pendingNode);
+            await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart});
             if(pendingNode.jimengPending || smartRecoverableImageTask(pendingNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                 clearPromptInput({preserveDraft:true});
@@ -13685,7 +13760,7 @@ async function runGeneration(){
             if(!(pendingNode.images || []).length) throw new Error(tr('smart.errNoOutImages'));
             if(outpaintSize) delete node.outpaintSize;
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            addSmartGenerationLog({run:runLog, outputs:(pendingNode.images || []).map(img => img.url).filter(Boolean), runMs:nowMs() - runLogStart});
+            addSmartGenerationLog({run:runLog, outputs:pendingNode.images || [], runMs:nowMs() - runLogStart});
             clearPromptInput({preserveDraft:true});
             settings = previousSettings;
             scheduleSave();
@@ -13722,7 +13797,7 @@ async function runGeneration(){
         }
         if(extracted) restoreFromExtraction(node, extracted);
         delete pendingNode._runMetaTargetId;
-        addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
+        if(!e?.smartGenerationLogged) addSmartGenerationLog({run:runLog, outputs:[], runMs:nowMs() - runLogStart, error:e.message || String(e)});
         toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
     } finally {
         if(!apiConcurrentRun){
@@ -13824,7 +13899,7 @@ async function runRunningHubGeneration(prompt, refs, runSettings=settings){
             return json.data || json;
         });
         if(data.status === 'SUCCESS'){
-            const urls = data.urls || [];
+            const urls = resultMediaUrls(data.image_items?.length ? data.image_items : (data.urls || []));
             if(!urls.length) throw new Error(tr('smart.rhOutputsEmpty'));
             return urls;
         }
@@ -14218,7 +14293,7 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
         if(data.status === 'succeeded'){
             task.failed = false;
             task.querying = false;
-            finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.images?.length ? data.images : data), task.kind || 'image');
+            finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), task.kind || 'image');
             render();
             scheduleSave();
             return;
@@ -14306,12 +14381,19 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image'){
     node.pending = Math.max(0, Number(node.pending || 0) - 1);
     const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : kind === 'text' ? 'txt' : 'png';
     const mediaItems = resultMediaUrls(images);
-    const additions = (mediaItems || []).map((item, i) => {
+    const existing = cleanHistoryImages(node.images || []);
+    const seen = new Set(existing.map(img => `${img.kind || ''}|${img.url || ''}`));
+    const additions = cleanHistoryImages((mediaItems || []).map((item, i) => {
         const url = typeof item === 'string' ? item : item?.url || '';
         const itemKind = (typeof item === 'object' && item.kind) || kind;
         return stripImageGenerationMeta(copyMediaSizeFields(item, {url, name:(typeof item === 'object' && item.name) || `output-${i + 1}.${ext}`, kind:itemKind, generatedResult:true}));
-    }).filter(item => item.url);
-    node.images = [...nonPreviewOutputImages(node.images).map(img => stripImageGenerationMeta({...img})), ...additions];
+    }).filter(item => item.url)).filter(item => {
+        const key = `${item.kind || ''}|${item.url || ''}`;
+        if(seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    node.images = [...existing, ...additions];
     if(additions.length) node.outputKind = kind;
     if(!node.pending && smartPendingTasks(node).length === 0){
         delete node.pendingTasks;
@@ -14327,9 +14409,19 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image'){
         delete node.h;
     }
 }
-async function resumeSmartPendingNode(node){
+async function resumeSmartPendingNode(node, logContext={}){
     const tasks = smartPendingTasks(node);
     if(!node || !tasks.length) return;
+    const logTaskFailure = (message, task) => {
+        if(!logContext?.run || !message) return;
+        const runMs = Math.max(0, nowMs() - Number(logContext.runLogStart || nowMs()));
+        addSmartGenerationLog({
+            run:logContext.run,
+            outputs:[],
+            runMs,
+            error:message
+        });
+    };
     node.pending = Math.max(tasks.length, Number(node.pending || 0) || tasks.length);
     node.running = false;
     render();
@@ -14338,7 +14430,7 @@ async function resumeSmartPendingNode(node){
         if(task.failed && task.recoverTaskId) return;
         try {
             const result = await pollSmartCanvasTask(task.taskId);
-            finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(result?.images?.length ? result.images : result), task.kind || 'image');
+            finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result)), task.kind || 'image');
             render();
             scheduleSave();
         } catch(e) {
@@ -14357,6 +14449,7 @@ async function resumeSmartPendingNode(node){
                 task.error = e.message || tr('smart.errRunFailed');
                 node.running = false;
                 node.pending = Math.max(1, smartPendingTasks(node).length);
+                logTaskFailure(task.error, task);
                 toast('任务未丢失，可稍后手动查询结果');
                 render();
                 scheduleSave();
@@ -14373,6 +14466,8 @@ async function resumeSmartPendingNode(node){
                 }
             }
             failures.push(e);
+            logTaskFailure(e.message || tr('smart.errRunFailed'), task);
+            if(e && typeof e === 'object') e.smartGenerationLogged = true;
             toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
             render();
             scheduleSave();

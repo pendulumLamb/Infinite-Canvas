@@ -7055,6 +7055,37 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
         print(f"保存上游图片失败: {e}")
         return value
 
+def image_output_meta(url, source_item=None):
+    meta = {"url": url, "kind": "image"}
+    if not url:
+        return meta
+    parsed_name = os.path.basename(urllib.parse.urlparse(str(url)).path)
+    if parsed_name:
+        meta["name"] = parsed_name
+    if isinstance(source_item, dict):
+        for key in ("natural_w", "natural_h", "width", "height", "w", "h", "layout_w", "layout_h"):
+            try:
+                value = int(float(source_item.get(key) or 0))
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                meta[key] = value
+    path = output_file_from_url(url)
+    if path and os.path.exists(path):
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+            if width > 0 and height > 0:
+                meta.update({
+                    "natural_w": width,
+                    "natural_h": height,
+                    "width": width,
+                    "height": height,
+                })
+        except Exception:
+            pass
+    return meta
+
 async def save_remote_video_to_output(url, prefix="video_", category="output"):
     if not url:
         return ""
@@ -8352,7 +8383,7 @@ async def runninghub_upload_local_to_filename(client, provider, url, use_wallet=
         return raw["data"]["fileName"]
     raise HTTPException(status_code=502, detail=(raw.get("msg") if isinstance(raw, dict) else "") or f"RunningHub 上传素材失败：{raw}")
 
-async def generate_runninghub_entry_image(prompt, model, reference_images, provider, entry):
+async def generate_runninghub_entry_image(prompt, size, model, reference_images, provider, entry):
     """运行 RunningHub 工作流 / AI 应用（与智能画布一致的运行方式），返回首张图片结果。"""
     kind = entry["kind"]
     entry_id = entry["id"]
@@ -8360,6 +8391,24 @@ async def generate_runninghub_entry_image(prompt, model, reference_images, provi
     idx_map = rh_field_indexes(fields)
     use_wallet = False
     timeout = httpx.Timeout(connect=20.0, read=1800.0, write=240.0, pool=20.0)
+    aspect = runninghub_aspect_from_size(size, "")
+    resolution = runninghub_resolution_from_size(size, "")
+    width, height = parse_size_pair(size)
+    def requested_size_field_value(field):
+        names = {
+            str(field.get("fieldName") or "").strip().lower(),
+            str(field.get("fieldKey") or "").strip().lower(),
+            str(field.get("label") or "").strip().lower(),
+        }
+        if aspect and names & {"aspectratio", "aspect_ratio", "ratio"}:
+            return runninghub_schema_value(field, aspect)
+        if resolution and "resolution" in names:
+            return runninghub_schema_value(field, resolution)
+        if width and "width" in names:
+            return width
+        if height and "height" in names:
+            return height
+        return None
     async with httpx.AsyncClient(timeout=timeout) as client:
         uploaded = []
         for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
@@ -8398,7 +8447,10 @@ async def generate_runninghub_entry_image(prompt, model, reference_images, provi
             elif kind_f == "number" and field.get("random_enabled") is True:
                 node_info_list.append({"nodeId": node_id, "fieldName": field_name, "fieldValue": rh_random_field_value(field)})
             else:
-                node_info_list.append({"nodeId": node_id, "fieldName": field_name, "fieldValue": rh_default_value(field)})
+                value = requested_size_field_value(field)
+                if value is None:
+                    value = rh_default_value(field)
+                node_info_list.append({"nodeId": node_id, "fieldName": field_name, "fieldValue": value})
 
         api_key = runninghub_api_key(provider, use_wallet=use_wallet)
         if kind == "workflow":
@@ -8441,7 +8493,7 @@ async def generate_runninghub_entry_image(prompt, model, reference_images, provi
 async def generate_runninghub_provider_image(prompt, size, model, reference_images=None, provider=None):
     entry = runninghub_entry_config_from_model(provider, model)
     if entry:
-        return await generate_runninghub_entry_image(prompt, model, reference_images, provider, entry)
+        return await generate_runninghub_entry_image(prompt, size, model, reference_images, provider, entry)
     model_def = await runninghub_model_definition(provider, model)
     endpoint = runninghub_task_endpoint(provider, model_def.get("endpoint") or model)
     params = model_def.get("params") if isinstance(model_def.get("params"), list) else []
@@ -10041,13 +10093,16 @@ async def runninghub_query(taskId: str = ""):
         code = raw.get("code") if isinstance(raw, dict) else None
         status = "PENDING"
         urls = []
+        image_items = []
         if code in (0, "0"):
             status = "SUCCESS"
             for remote in runninghub_extract_outputs(raw.get("data")):
                 try:
-                    urls.append(await runninghub_store_remote_output(client, remote))
+                    local_url = await runninghub_store_remote_output(client, remote)
                 except Exception:
-                    urls.append(remote)
+                    local_url = remote
+                urls.append(local_url)
+                image_items.append(image_output_meta(local_url))
         elif code in (804, "804"):
             status = "RUNNING"
         elif code in (813, "813"):
@@ -10056,7 +10111,7 @@ async def runninghub_query(taskId: str = ""):
             status = "FAILED"
         else:
             status = "UNKNOWN"
-        return {"success": True, "data": {"status": status, "urls": urls, "failReason": runninghub_fail_reason(raw), "code": code, "raw": raw}}
+        return {"success": True, "data": {"status": status, "urls": urls, "image_items": image_items, "failReason": runninghub_fail_reason(raw), "code": code, "raw": raw}}
 
 @app.post("/api/runninghub/upload-asset")
 async def runninghub_upload_asset(payload: RunningHubUploadAssetRequest):
@@ -10945,11 +11000,13 @@ async def build_online_image_result(payload: OnlineImageRequest):
         except HTTPException:
             image_items = [image_data]
         local_urls = []
+        local_items = []
         for item in image_items:
             local_url = await save_ai_image_to_output(item, prefix="online_")
             if local_url:
                 local_urls.append(local_url)
-        return local_urls, raw_item
+                local_items.append(image_output_meta(local_url, item))
+        return local_urls, local_items, raw_item
     try:
         generated = await asyncio.gather(*(generate_one() for _ in range(count)))
     except httpx.HTTPStatusError as exc:
@@ -10962,8 +11019,9 @@ async def build_online_image_result(payload: OnlineImageRequest):
         log_net_error(f"生图 网络/TLS错误 provider={provider.get('id')} model={model}", exc)
         raise HTTPException(status_code=502, detail=f"请求上游生图接口失败：{exc}") from exc
 
-    local_urls = [url for urls, _raw in generated for url in (urls or []) if url]
-    raw = generated[0][1] if generated else {}
+    local_urls = [url for urls, _items, _raw in generated for url in (urls or []) if url]
+    local_items = [item for _urls, items, _raw in generated for item in (items or []) if item.get("url")]
+    raw = generated[0][2] if generated else {}
     if not local_urls:
         provider_name = provider.get("name") or provider["id"]
         raw_text = json.dumps(raw, ensure_ascii=False)[:800] if isinstance(raw, (dict, list)) else str(raw)[:800]
@@ -10971,6 +11029,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
     result = {
         "prompt": payload.prompt,
         "images": local_urls,
+        "image_items": local_items,
         "timestamp": time.time(),
         "type": "online",
         "model": model,
@@ -11014,14 +11073,17 @@ async def query_image_task(payload: ImageTaskQueryRequest):
         image_items = []
     if image_items:
         local_urls = []
+        local_items = []
         for item in image_items:
             local_url = await save_ai_image_to_output(item, prefix="online_")
             if local_url:
                 local_urls.append(local_url)
+                local_items.append(image_output_meta(local_url, item))
         result = {
             "status": "succeeded",
             "prompt": "",
             "images": local_urls,
+            "image_items": local_items,
             "timestamp": time.time(),
             "type": "online",
             "model": "",
